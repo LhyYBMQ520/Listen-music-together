@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package smtc;
+
+// HTTP endpoint: GET http://localhost:9863/
+// Response body is a binary-encoded SmtcData message.
+
+message SmtcData {
+  string source_app = 1;
+  string source_app_id = 2;
+  string title = 3;
+  string artist = 4;
+  PlaybackStatus playback_status = 5;
+  SmtcTimeline timeline = 6;
+  bytes thumbnail = 7;
+  int32 session_index = 8;
+  int32 session_count = 9;
+}
+
+enum PlaybackStatus {
+  UNKNOWN = 0;
+  PLAYING = 1;
+  PAUSED = 2;
+  STOPPED = 3;
+  CHANGING = 4;
+  CLOSED = 5;
+}
+
+message SmtcTimeline {
+  double position_seconds = 1;
+  double end_time_seconds = 2;
+  int64 position_ticks = 3;
+  int64 end_time_ticks = 4;
+}

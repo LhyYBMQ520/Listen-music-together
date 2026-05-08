@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <clocale>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <cwctype>
@@ -429,6 +430,15 @@ bool EnumerateAudioSessions(std::vector<AudioSessionInfo>& sessions, std::wstrin
     return true;
 }
 
+std::string WstrToUtf8(const std::wstring& wstr);
+void WriteFrame(uint8_t type, const void* payload, uint32_t size);
+void WriteTextFrame(const std::string& text);
+void WriteAudioFormatFrame(const WAVEFORMATEX* fmt);
+void WriteAudioChunkFrame(uint64_t timestampUs, const uint8_t* data, uint32_t size);
+void WriteStdoutLine(const std::string& line);
+void WriteStdoutBuf(const void* data, DWORD size);
+std::string ReadStdinLine();
+
 class WavWriter {
 public:
     bool Open(const std::wstring& path, const WAVEFORMATEX* format, std::wstring& errorMessage) {
@@ -693,7 +703,7 @@ HRESULT ActivateProcessLoopbackAudioClient(DWORD processId, IAudioClient** audio
 
 class SessionCapturer {
 public:
-    bool Start(const AudioSessionInfo& session, const std::wstring& wavPath) {
+    bool Start(const AudioSessionInfo& session, const std::wstring& wavPath, bool streamToStdout = false) {
         if (running_.load()) {
             return false;
         }
@@ -707,7 +717,7 @@ public:
         capturedBytes_.store(0);
         SetLastMessage(L"Starting capture...");
 
-        worker_ = std::thread(&SessionCapturer::CaptureWorker, this, session, wavPath);
+        worker_ = std::thread(&SessionCapturer::CaptureWorker, this, session, wavPath, streamToStdout);
         return true;
     }
 
@@ -745,7 +755,7 @@ private:
         lastMessage_ = message;
     }
 
-    void CaptureWorker(AudioSessionInfo session, std::wstring wavPath) {
+    void CaptureWorker(AudioSessionInfo session, std::wstring wavPath, bool streamToStdout) {
         bool failed = false;
         bool wroteFile = false;
         HRESULT hr = S_OK;
@@ -863,6 +873,15 @@ private:
             wroteFile = writer.Enabled();
         }
 
+        if (streamToStdout) {
+            WriteAudioFormatFrame(mixFormat);
+            QueryPerformanceFrequency(&qpcFreq_);
+            QueryPerformanceCounter(&captureStartQpc_);
+            minChunkBytes_ = (mixFormat->nSamplesPerSec * mixFormat->nBlockAlign) / 10;
+            chunkBuf_.clear();
+            chunkFirstBuffer_ = true;
+        }
+
         hr = audioClient->Start();
         if (FAILED(hr)) {
             SetLastMessage(L"Capture start failed: IAudioClient::Start failed.");
@@ -911,6 +930,25 @@ private:
                     }
                 }
 
+                if (streamToStdout && bytesToWrite > 0) {
+                    if (chunkFirstBuffer_) {
+                        chunkStartTimestamp_ = GetTimestampUs();
+                        chunkFirstBuffer_ = false;
+                    }
+                    if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0) {
+                        if (silenceBuffer.size() < bytesToWrite) {
+                            silenceBuffer.resize(bytesToWrite, 0);
+                        }
+                        chunkBuf_.insert(chunkBuf_.end(), silenceBuffer.begin(), silenceBuffer.begin() + bytesToWrite);
+                    }
+                    else {
+                        chunkBuf_.insert(chunkBuf_.end(), data, data + bytesToWrite);
+                    }
+                    if (chunkBuf_.size() >= minChunkBytes_) {
+                        FlushChunk();
+                    }
+                }
+
                 capturedBytes_.fetch_add(bytesToWrite);
 
                 hr = captureClient->ReleaseBuffer(frameCount);
@@ -931,6 +969,10 @@ private:
             if (failed) {
                 break;
             }
+        }
+
+        if (streamToStdout) {
+            FlushChunk();
         }
 
 Cleanup:
@@ -966,6 +1008,20 @@ Cleanup:
         running_.store(false);
     }
 
+    void FlushChunk() {
+        if (!chunkBuf_.empty()) {
+            WriteAudioChunkFrame(chunkStartTimestamp_, chunkBuf_.data(), static_cast<uint32_t>(chunkBuf_.size()));
+            chunkBuf_.clear();
+        }
+        chunkFirstBuffer_ = true;
+    }
+
+    uint64_t GetTimestampUs() const {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        return ((now.QuadPart - captureStartQpc_.QuadPart) * 1000000ULL) / qpcFreq_.QuadPart;
+    }
+
 private:
     std::atomic<bool> running_{ false };
     std::atomic<bool> stopRequested_{ false };
@@ -973,6 +1029,14 @@ private:
     mutable std::mutex messageMutex_;
     std::wstring lastMessage_;
     std::thread worker_;
+
+    // Chunk batching for framed stdout output
+    std::vector<BYTE> chunkBuf_;
+    uint64_t chunkStartTimestamp_ = 0;
+    LARGE_INTEGER captureStartQpc_ = {};
+    LARGE_INTEGER qpcFreq_ = {};
+    uint32_t minChunkBytes_ = 0;
+    bool chunkFirstBuffer_ = true;
 };
 
 void RenderIdleView(
@@ -1039,7 +1103,212 @@ void RenderCaptureView(
     std::wcout << L"Press ESC to stop capture..." << std::flush;
 }
 
+std::string WstrToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string result(static_cast<size_t>(len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), &result[0], len, nullptr, nullptr);
+    return result;
+}
+
+void WriteFrame(uint8_t type, const void* payload, uint32_t size) {
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    // Header: 1 byte type + 3 bytes length (big-endian)
+    uint8_t header[4];
+    header[0] = type;
+    header[1] = static_cast<uint8_t>((size >> 16) & 0xFF);
+    header[2] = static_cast<uint8_t>((size >> 8) & 0xFF);
+    header[3] = static_cast<uint8_t>(size & 0xFF);
+    DWORD written = 0;
+    WriteFile(hStdout, header, 4, &written, nullptr);
+    if (size > 0 && payload != nullptr) {
+        WriteFile(hStdout, payload, size, &written, nullptr);
+    }
+}
+
+void WriteTextFrame(const std::string& text) {
+    WriteFrame(0x01, text.c_str(), static_cast<uint32_t>(text.size()));
+}
+
+void WriteAudioFormatFrame(const WAVEFORMATEX* fmt) {
+    // Payload: [sampleRate:4 LE][channels:2 LE][bitsPerSample:2 LE][blockAlign:2 LE][formatTag:2 LE] = 12 bytes
+    uint8_t payload[12];
+    payload[0] = static_cast<uint8_t>(fmt->nSamplesPerSec & 0xFF);
+    payload[1] = static_cast<uint8_t>((fmt->nSamplesPerSec >> 8) & 0xFF);
+    payload[2] = static_cast<uint8_t>((fmt->nSamplesPerSec >> 16) & 0xFF);
+    payload[3] = static_cast<uint8_t>((fmt->nSamplesPerSec >> 24) & 0xFF);
+    payload[4] = static_cast<uint8_t>(fmt->nChannels & 0xFF);
+    payload[5] = static_cast<uint8_t>((fmt->nChannels >> 8) & 0xFF);
+    payload[6] = static_cast<uint8_t>(fmt->wBitsPerSample & 0xFF);
+    payload[7] = static_cast<uint8_t>((fmt->wBitsPerSample >> 8) & 0xFF);
+    payload[8] = static_cast<uint8_t>(fmt->nBlockAlign & 0xFF);
+    payload[9] = static_cast<uint8_t>((fmt->nBlockAlign >> 8) & 0xFF);
+    payload[10] = static_cast<uint8_t>(fmt->wFormatTag & 0xFF);
+    payload[11] = static_cast<uint8_t>((fmt->wFormatTag >> 8) & 0xFF);
+    WriteFrame(0x03, payload, 12);
+}
+
+void WriteAudioChunkFrame(uint64_t timestampUs, const uint8_t* data, uint32_t size) {
+    // Payload: [timestamp:8 LE][PCM data:N]
+    std::vector<uint8_t> payload;
+    payload.reserve(8 + size);
+    for (int i = 0; i < 8; ++i) {
+        payload.push_back(static_cast<uint8_t>((timestampUs >> (i * 8)) & 0xFF));
+    }
+    payload.insert(payload.end(), data, data + size);
+    WriteFrame(0x02, payload.data(), static_cast<uint32_t>(payload.size()));
+}
+
+// Legacy functions retained for interactive (non-slave) mode only.
+void WriteStdoutLine(const std::string& line) {
+    DWORD written = 0;
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    WriteFile(hStdout, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr);
+    const char nl = '\n';
+    WriteFile(hStdout, &nl, 1, &written, nullptr);
+}
+
+void WriteStdoutBuf(const void* data, DWORD size) {
+    DWORD written = 0;
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    WriteFile(hStdout, data, size, &written, nullptr);
+}
+
+std::string ReadStdinLine() {
+    std::string result;
+    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    char ch;
+    DWORD read = 0;
+    while (ReadFile(hStdin, &ch, 1, &read, nullptr) && read == 1) {
+        if (ch == '\n') break;
+        if (ch != '\r') result.push_back(ch);
+    }
+    return result;
+}
+
+int RunSlaveMode() {
+    SessionCapturer capturer;
+    std::vector<AudioSessionInfo> sessions;
+    std::wstring deviceName;
+    bool running = true;
+
+    while (running) {
+        std::wstring error;
+        if (!EnumerateAudioSessions(sessions, deviceName, error)) {
+            WriteTextFrame("ERROR|" + WstrToUtf8(error));
+            continue;
+        }
+
+        WriteTextFrame("SESSIONS|" + std::to_string(sessions.size()));
+        for (size_t i = 0; i < sessions.size(); ++i) {
+            const auto& s = sessions[i];
+            std::string line = "SESSION|";
+            line += std::to_string(i + 1) + "|";
+            line += std::to_string(s.processId) + "|";
+            line += WstrToUtf8(s.processName) + "|";
+            line += WstrToUtf8(GetSessionStateDescription(s.state)) + "|";
+            line += std::to_string(static_cast<int>(s.volume * 100)) + "|";
+            line += (s.muted ? "1" : "0");
+            WriteTextFrame(line);
+        }
+        WriteTextFrame("READY");
+
+        std::string input = ReadStdinLine();
+        if (input.empty()) {
+            break;
+        }
+
+        if (input == "REFRESH") {
+            continue;
+        }
+
+        if (input == "EXIT" || input == "QUIT") {
+            running = false;
+            break;
+        }
+
+        int selectedIndex = 0;
+        try {
+            selectedIndex = std::stoi(input);
+        } catch (...) {
+            WriteTextFrame("ERROR|Invalid session index");
+            continue;
+        }
+
+        if (selectedIndex < 1 || selectedIndex > static_cast<int>(sessions.size())) {
+            WriteTextFrame("ERROR|Invalid session index");
+            continue;
+        }
+
+        AudioSessionInfo selected = sessions[static_cast<size_t>(selectedIndex - 1)];
+        if (selected.processId == 0) {
+            WriteTextFrame("ERROR|Cannot capture system audio session");
+            continue;
+        }
+
+        if (!capturer.Start(selected, L"", true)) {
+            WriteTextFrame("ERROR|Failed to start capture");
+            continue;
+        }
+
+        std::atomic<bool> stopCapture{false};
+        std::thread inputThread([&]() {
+            std::string cmd = ReadStdinLine();
+            if (cmd == "STOP") {
+                stopCapture.store(true);
+            }
+            if (cmd == "EXIT" || cmd == "QUIT") {
+                stopCapture.store(true);
+                running = false;
+            }
+        });
+
+        while (capturer.IsRunning() && !stopCapture.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        if (capturer.IsRunning()) {
+            capturer.RequestStop();
+        }
+        capturer.Wait();
+
+        if (inputThread.joinable()) {
+            inputThread.join();
+        }
+
+        if (running) {
+            WriteTextFrame("STOPPED|" + std::to_string(capturer.GetCapturedBytes()));
+        }
+    }
+
+    WriteFrame(0xFF, nullptr, 0);
+    return 0;
+}
+
+bool IsStdinPipe() {
+    DWORD mode;
+    return !GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode);
+}
+
 int main() {
+    bool slaveMode = IsStdinPipe();
+
+    if (slaveMode) {
+        HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const bool shouldCoUninit = SUCCEEDED(comHr);
+        if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
+            fprintf(stderr, "COM initialization failed. HRESULT=0x%llx\n",
+                static_cast<unsigned long long>(comHr));
+            return 1;
+        }
+        int result = RunSlaveMode();
+        if (shouldCoUninit) {
+            CoUninitialize();
+        }
+        return result;
+    }
+
     setlocale(LC_ALL, "");
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 

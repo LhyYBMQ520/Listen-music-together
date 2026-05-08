@@ -1,0 +1,6 @@
+.claude/
+HANDOFF.md
+
+# 忽略 bin 及其所有子文件夹下的 exe、dll 文件
+bin/**/*.exe
+bin/**/*.dll

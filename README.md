@@ -1,35 +1,70 @@
-# Listen-music-together
+# Listen Music Together
 
-这是一个正在开发中的一起听歌网页前后端全栈项目，完成度未知，能否完工未知。。。
+一起听歌网页全栈项目。Windows 桌面端捕获系统音频并通过 WebSocket 推送到浏览器实时播放，同时展示 SMTC 媒体元数据（歌名/歌手/专辑封面/进度）。
 
-## 当前项目结构
+## 架构
+
+```
+audio.exe (C++ WASAPI) ──PCM帧协议──> go-server (Go TUI) ──WebSocket──> browser (JS)
+                                            │
+                              smtc.exe (C# WPF, :9863 HTTP)
+```
+
+| 模块 | 语言 | 职责 |
+| :--- | :--- | :--- |
+| [audio](./src/audio/) | C++ | WASAPI loopback 音频捕获，二进制帧协议输出到 stdout |
+| [smtc](./src/smtc/) | C# | Windows SMTC API 轮询，HTTP 暴露 JSON/Protobuf |
+| [golang-server](./src/golang-server/) | Go | 主控调度、WebSocket 广播、Bubbletea TUI |
+| [public](./public/) | JS | Web Audio API 播放、SMTC UI 展示 |
+
+## 项目结构
 
 ```
 Listen-music-together/
-├── public/                         # 前端页面
-│   └── index.html                  # Web 前端主页面，用户交互界面
-├── src/                            # 后端源码
-│   ├── audio/                      # C++ 音频捕获模块（基于 WASAPI）
-│   │   ├── audio.cpp               # 核心源码：枚举系统音频会话、捕获音频数据、支持写入 WAV 文件
-│   │   ├── audio.slnx / .vcxproj   # Visual Studio 解决方案与项目文件
-│   │   └── README.md               # 模块自述文档（编译指南、API 说明）
-│   ├── smtc/                       # C# SMTC 媒体信息采集模块（基于 Windows SMTC API）
-│   │   ├── App.xaml                # WPF 应用程序定义（资源、启动窗口等）
-│   │   ├── App.xaml.cs             # WPF 应用程序启动逻辑
-│   │   ├── AssemblyInfo.cs         # 程序集元数据
-│   │   ├── MainWindow.xaml         # WPF 主窗口界面布局
-│   │   ├── MainWindow.xaml.cs      # 主窗口逻辑：每 200ms 轮询系统媒体会话，获取歌曲/歌手/进度等
-│   │   ├── SmtcHttpServer.cs       # 轻量级 HTTP 服务器，监听 localhost:9863，对外暴露 JSON/Protobuf 数据
-│   │   ├── SmtcData.cs             # Protobuf 数据模型（播放状态、时间线等）
-│   │   ├── smtc_data.proto         # 跨语言 Proto 定义文件
-│   │   ├── smtc.csproj             # .NET 8 项目配置文件
-│   │   ├── smtc.slnx               # Visual Studio 解决方案文件
-│   │   └── README.md               # 模块自述文档（API 端点说明、使用示例）
-│   └── golang-server/              # Go 网页后端&模块组装服务（规划中，尚未实现）
-├── LICENSE                         # 开源许可证
-└── README.md                       # 项目总览文档
+├── public/
+│   ├── index.html          # 前端页面（Tailwind CSS + 歌曲信息 UI）
+│   └── script.js           # 前端逻辑（WebSocket、AudioPlayer）
+├── src/
+│   ├── audio/              # C++ 音频捕获模块
+│   ├── smtc/               # C# SMTC 媒体信息采集模块
+│   └── golang-server/      # Go 后端主控服务
+├── README.md
 ```
 
-## 已完工模块自述文档
-- [C++音频模块](./src/audio/README.md)
-- [C#SMTC模块](./src/smtc/README.md)
+## 快速开始
+
+### 前置条件
+
+- Visual Studio 2022+ (C++ 桌面开发工作负载)
+- .NET 8 SDK
+- Go 1.26+
+- Windows 10 2004+ (build ≥ 19041)
+
+### 构建
+
+```powershell
+# 1. C# smtc.exe
+Visual Studio 轮椅一键 Release|x64 构建，发布一条龙（推荐打开单文件发布）
+
+# 2. C++ audio.exe 
+Visual Studio 轮椅 Release|x64 编译
+
+# 3. Go server
+go build
+```
+
+### 运行
+
+```
+将 smtc.exe 及其其他几个无法打包入exe的dll全部复制粘贴，放在 bin/smtc 文件夹下
+将 audio.exe 复制粘贴，放在 bin/audio 文件夹下
+将 Go server 编译产出的exe放在 bin 文件夹下
+# 浏览器打开 http://ip:9090
+# 运行Go server 并在 TUI 中输入会话序号开始捕获
+```
+
+## 模块文档
+
+- [C++ 音频模块](./src/audio/README.md)
+- [C# SMTC 模块](./src/smtc/README.md)
+- [Go Server 模块](./src/golang-server/README.md)

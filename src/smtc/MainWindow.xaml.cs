@@ -211,7 +211,7 @@ namespace smtc
                 if (mediaInfo == null) return;
 
                 // 加载封面
-                BitmapImage cover = null;
+                ImageSource cover = null;
                 if (mediaInfo.Thumbnail != null)
                 {
                     try
@@ -222,11 +222,13 @@ namespace smtc
                         ms.Read(rawBytes, 0, rawBytes.Length);
                         _thumbnailBytes = rawBytes;
                         ms.Position = 0;
-                        cover = new BitmapImage();
-                        cover.BeginInit();
-                        cover.CacheOption = BitmapCacheOption.OnLoad;
-                        cover.StreamSource = ms;
-                        cover.EndInit();
+                        var bitmap = new BitmapImage();
+                        bitmap.BeginInit();
+                        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                        bitmap.StreamSource = ms;
+                        bitmap.EndInit();
+                        bitmap.Freeze();
+                        cover = new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
                         cover.Freeze();
                     }
                     catch { _thumbnailBytes = null; }

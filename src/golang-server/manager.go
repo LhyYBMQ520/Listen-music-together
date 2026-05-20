@@ -239,6 +239,8 @@ func (am *AudioManager) ReadAudioAndBroadcast() {
 	defer func() {
 		am.capturing.Store(false)
 		am.capturedBytes.Store(0)
+		am.hub.ClearAudioFormatJSON()
+		am.hub.BroadcastText([]byte(`{"type":"capture-stopped"}`))
 	}()
 
 	for {
@@ -285,6 +287,7 @@ func (am *AudioManager) ReadAudioAndBroadcast() {
 			}
 			if formatJSON, err := json.Marshal(formatMsg); err == nil {
 				am.hub.BroadcastText(formatJSON)
+				am.hub.SetAudioFormatJSON(formatJSON)
 			}
 
 			tuiLog("Audio format: %d Hz, %d ch, %d bits, align=%d",
@@ -321,6 +324,7 @@ func (am *AudioManager) ReadAudioAndBroadcast() {
 // StopCapture sends the STOP command to the audio process and signals ReadAudioAndBroadcast to exit.
 func (am *AudioManager) StopCapture() {
 	am.stopCaptureFlag.Store(true)
+	am.hub.ClearAudioFormatJSON()
 
 	am.mu.Lock()
 	defer am.mu.Unlock()

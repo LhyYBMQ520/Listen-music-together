@@ -32,9 +32,9 @@ audio.exe stdout (帧协议) ──> AudioManager ──> Hub ──WebSocket─
 smtc.exe :9863/json ──HTTP──> PollSmtcAndBroadcast ─┤
                                                  │
                                           HTTP :9090
-                                          ├── /         静态文件 (public/)
-                                          ├── /ws       WebSocket 端点
-                                          ├── /api/smtc  SMTC 代理
+                                          ├── /               静态文件 (public/)
+                                          ├── /ws             WebSocket 端点
+                                          ├── /api/smtc       SMTC 代理
                                           └── /api/thumbnail  封面图片
 ```
 
@@ -67,11 +67,14 @@ Wire format: [type:1][length:3 big-endian][payload:N]
 
 WebSocket 广播中心，维护客户端连接集合并分发 Text/Binary 消息。
 
+- 缓存最新音频格式 JSON（`currentFormatJSON`），新客户端连接时自动发送，确保后加入的客户端能正确初始化音频播放
+- 捕获停止时广播 `capture-stopped` 消息，通知前端重置状态
+
 ### SMTC 集成
 
 - `PollSmtcAndBroadcast` — 每 200ms 轮询 `localhost:9863/json`，通过 WebSocket 广播媒体元数据
 - `/api/smtc` — 代理 SMTC JSON 到前端
-- `/api/thumbnail` — 从 protobuf 二进制中提取封面图片 (field 7)
+- `/api/thumbnail` — 从 protobuf 二进制中提取封面图片 (field 7)，带防缓存响应头
 
 ### TUI (`tui.go`)
 
@@ -79,6 +82,15 @@ WebSocket 广播中心，维护客户端连接集合并分发 Text/Binary 消息
 - 左侧：音频会话列表（自动刷新 3s），输入序号选择捕获
 - 右侧：服务器日志
 - 快捷键：`Enter` 选择/停止捕获，`Backspace` 删除数字，`Ctrl+C`/`ESC`/`q` 退出
+
+## WebSocket 消息类型
+
+| type | 方向 | 说明 |
+| :--- | :--- | :--- |
+| `smtc` | s→c | SMTC 媒体元数据（Text/JSON） |
+| `audio-format` | s→c | PCM 格式描述（新客户端连接时自动补发） |
+| `capture-stopped` | s→c | 捕获已停止，前端应重置播放状态 |
+| `binary Blob` | s→c | 音频帧数据 |
 
 ## 构建与运行
 

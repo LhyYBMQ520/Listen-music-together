@@ -17,11 +17,12 @@ var upgrader = websocket.Upgrader{
 
 // Hub maintains the set of active WebSocket clients and broadcasts messages.
 type Hub struct {
-	clients    map[*Client]bool
-	broadcast  chan hubMessage
-	register   chan *Client
-	unregister chan *Client
-	mu         sync.RWMutex
+	clients           map[*Client]bool
+	broadcast         chan hubMessage
+	register          chan *Client
+	unregister        chan *Client
+	mu                sync.RWMutex
+	currentFormatJSON []byte // cached audio-format JSON sent to newly connected clients
 }
 
 type hubMessage struct {
@@ -50,7 +51,14 @@ func (h *Hub) Run() {
 		case client := <-h.register:
 			h.mu.Lock()
 			h.clients[client] = true
+			formatData := h.currentFormatJSON
 			h.mu.Unlock()
+			if formatData != nil {
+				select {
+				case client.send <- hubMessage{websocket.TextMessage, formatData}:
+				default:
+				}
+			}
 			tuiLog("WebSocket client connected (%d total)", len(h.clients))
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -81,6 +89,18 @@ func (h *Hub) BroadcastText(data []byte) {
 
 func (h *Hub) BroadcastBinary(data []byte) {
 	h.broadcast <- hubMessage{websocket.BinaryMessage, data}
+}
+
+func (h *Hub) SetAudioFormatJSON(data []byte) {
+	h.mu.Lock()
+	h.currentFormatJSON = data
+	h.mu.Unlock()
+}
+
+func (h *Hub) ClearAudioFormatJSON() {
+	h.mu.Lock()
+	h.currentFormatJSON = nil
+	h.mu.Unlock()
 }
 
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
@@ -157,7 +177,9 @@ func StartServer(hub *Hub, publicDir string, port int) error {
 		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		w.Write(thumb)
 	})
 

@@ -17,6 +17,15 @@ audio.exe (C++ WASAPI) ──PCM帧协议──> go-server (Go TUI) ──WebSoc
 | [golang-server](./src/golang-server/) | Go | 主控调度、WebSocket 广播、Bubbletea TUI |
 | [public](./public/) | JS | Web Audio API 播放、SMTC UI 展示 |
 
+## 特性
+
+- **实时音频捕获**：WASAPI 进程级 loopback，零额外延迟
+- **二进制帧协议**：类型化帧封装，文本/二进制数据流不混排
+- **Gapless 播放**：Web Audio API 合并连续 chunk，`nextPlayTime` 链式调度
+- **媒体信息展示**：歌名、歌手、专辑封面、播放进度实时更新
+- **TUI 控制面板**：Bubbletea 终端界面，会话列表、自动刷新、捕获控制
+- **多客户端支持**：WebSocket Hub 广播，支持多个浏览器同时收听
+
 ## 项目结构
 
 ```
@@ -46,10 +55,11 @@ Listen-music-together/
 # 1. C# smtc.exe
 Visual Studio 轮椅一键 Release|x64 构建，发布一条龙（推荐打开单文件发布）
 
-# 2. C++ audio.exe 
+# 2. C++ audio.exe
 Visual Studio 轮椅 Release|x64 编译
 
 # 3. Go server
+cd src/golang-server
 go build
 ```
 

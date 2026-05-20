@@ -20,15 +20,25 @@
         }
 
         init(format) {
-            if (this.ctx && this.format &&
-                this.format.sampleRate === format.sampleRate &&
-                this.format.channels === format.channels) {
-                return;
+            // 先停掉旧的调度循环，避免多个 _scheduleLoop 同时运行
+            if (this.scheduleTimer) {
+                clearTimeout(this.scheduleTimer);
+                this.scheduleTimer = null;
             }
-            this.stop();
-            this.ctx = new (window.AudioContext || window.webkitAudioContext)({
-                sampleRate: format.sampleRate
-            });
+
+            const formatChanged = !this.ctx || !this.format ||
+                this.format.sampleRate !== format.sampleRate ||
+                this.format.channels !== format.channels;
+            if (formatChanged) {
+                if (this.ctx) {
+                    this.ctx.close();
+                    this.ctx = null;
+                }
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: format.sampleRate
+                });
+            }
+
             this.format = format;
             this.chunks = [];
             this.firstTs = null;
@@ -182,7 +192,7 @@
                     chunk.scheduled = true;
                 }
 
-                const playAt = Math.max(when, this.nextPlayTime);
+                const playAt = Math.max(when, this.nextPlayTime, this.ctx.currentTime);
                 const source = this.ctx.createBufferSource();
                 source.buffer = audioBuffer;
                 source.connect(this.ctx.destination);
@@ -260,6 +270,9 @@
                 } else if (msg.type === 'audio-format') {
                     console.log('Audio format:', msg.format);
                     player.init(msg.format);
+                } else if (msg.type === 'capture-stopped') {
+                    console.log('Capture stopped');
+                    player.stop();
                 }
             } catch (e) {
                 console.error('Failed to parse WebSocket message:', e);
@@ -297,6 +310,8 @@
         'Unknown': '未知状态'
     };
 
+    let lastCoverKey = '';
+
     function updateSmtcUI(data) {
         document.getElementById('appName').textContent = data.SourceApp || '无播放信息';
         document.getElementById('sessionIndex').textContent =
@@ -308,9 +323,14 @@
 
         const coverImg = document.getElementById('cover');
         if (data.ThumbnailSize > 0) {
-            coverImg.src = `/api/thumbnail?t=${Date.now()}`;
+            const coverKey = `${data.Title}|${data.Artist}|${data.ThumbnailSize}`;
+            if (coverKey !== lastCoverKey) {
+                lastCoverKey = coverKey;
+                coverImg.src = `/api/thumbnail?t=${Date.now()}`;
+            }
             coverImg.classList.remove('hidden');
         } else {
+            lastCoverKey = '';
             coverImg.classList.add('hidden');
         }
 
